@@ -17,6 +17,7 @@ _default_disablePower=False
 _default_tx_diff=0
 _default_tx_slice=15
 _default_ref_current_trim=16
+_default_enable_ana_mon=False
 
 def reconcile_configuration(c, chip_keys, verbose, \
                             timeout=0.1, connection_delay=0.01, \
@@ -185,7 +186,6 @@ def configure_chip_id(c, ioGroup, ioChannel, chipId):
     chip_key = larpix.key.Key(ioGroup, ioChannel, chipId)
     if chip_key not in c.chips: c.add_chip(chip_key, version='2b')
     c[chip_key].config.chip_id = chipId
-    c.write_configuration(chip_key, 'chip_id')
 
     return chip_key
 
@@ -219,18 +219,18 @@ def setup_root_chips(c, io, ioGroup, io_channel_root_chip_id_map, \
     for ioc in io_channel_root_chip_id_map.keys():
         chip_key = configure_chip_id(c, ioGroup, ioc, \
                                      io_channel_root_chip_id_map[ioc])
-
+        
+        disable_csa_trigger(c, chip_key, \
+                            ref_current_trim=ref_current_trim)
+        
         # configure receivers
-        c[chip_key].config.enable_posi=[0]*4
-        c[chip_key].config.enable_posi[1]=1
-        c.write_configuration(chip_key, 'enable_posi')
         c[chip_key].config.r_term1=r_term
         c.write_configuration(chip_key, 'r_term1')
         c[chip_key].config.r_term0=r_term
         c.write_configuration(chip_key, 'r_term0')
-
-        disable_csa_trigger(c, chip_key, \
-                            ref_current_trim=ref_current_trim)
+        c[chip_key].config.enable_posi=[0]*4
+        c[chip_key].config.enable_posi[1]=1
+        c.write_configuration(chip_key, 'enable_posi')
         
         # configure transmitters
         c[chip_key].config.enable_piso_downstream=[0]*4
@@ -260,11 +260,7 @@ def setup_root_chips(c, io, ioGroup, io_channel_root_chip_id_map, \
             print(chip_key,' configured')
         if not ok:
             print(chip_key,' NOT configured')
-            c[chip_key].config.enable_posi=[1]*4
-            c[chip_key].config.enable_posi[0]=0
-            c.write_configuration(chip_key, 'enable_posi')
-            c[chip_key].config.enable_piso_downstream=[0]*4
-            c.write_configuration(chip_key, 'enable_piso_downstream')
+            reset_daughter_uarts(c, chip_key, verbose)
             ok, diff = reconcile_configuration(c, chip_key, verbose)
             c.remove_chip(chip_key)
             
@@ -290,10 +286,6 @@ def setup_parent_piso_us(c, parent, daughter, verbose, tx_diff, tx_slice):
     if parent.chip_id - daughter.chip_id == 1: piso=0
     if verbose: print('PARENT ',parent,'\tdaughter ',\
                       daughter,'==>\t enable PISO US ', piso)
-    c[parent].config.enable_piso_upstream[piso]=1
-    c.write_configuration(parent, 'enable_piso_upstream')
-    if verbose: print(c[parent].config.enable_piso_upstream)
-
     registers_to_write=[]
     setattr(c[parent].config,f'i_tx_diff{piso}', tx_diff)
     registers_to_write.append(c[parent].config.register_map[f'i_tx_diff{piso}'])
@@ -301,9 +293,9 @@ def setup_parent_piso_us(c, parent, daughter, verbose, tx_diff, tx_slice):
     registers_to_write.append(c[parent].config.register_map[f'tx_slices{piso}'])
     for reg in registers_to_write: c.write_configuration(parent, reg)
 
-    #c[parent].config.enable_piso_upstream[piso]=1
-    #c.write_configuration(parent, 'enable_piso_upstream')
-    #if verbose: print(c[parent].config.enable_piso_upstream)
+    c[parent].config.enable_piso_upstream[piso]=1
+    c.write_configuration(parent, 'enable_piso_upstream')
+    if verbose: print(c[parent].config.enable_piso_upstream)
     return 
 
 
@@ -335,8 +327,6 @@ def setup_parent_posi(c, parent, daughter, verbose, r_term, i_rx):
     if parent.chip_id - daughter.chip_id == 1: posi=1
     if verbose: print('PARENT ',parent,'\tdaughter ',\
                       daughter,'==>\t enable POSI ', posi)
-    c[parent].config.enable_posi[posi]=1
-    c.write_configuration(parent, 'enable_posi')
     if verbose: print(c[parent].config.enable_posi)
     registers_to_write=[]
     setattr(c[parent].config,f'r_term{posi}', r_term)
@@ -344,6 +334,8 @@ def setup_parent_posi(c, parent, daughter, verbose, r_term, i_rx):
     setattr(c[parent].config,f'i_rx{posi}', i_rx)
     registers_to_write.append(c[parent].config.register_map[f'i_rx{posi}'])
     for reg in registers_to_write: c.write_configuration(parent, reg)
+    c[parent].config.enable_posi[posi]=1
+    c.write_configuration(parent, 'enable_posi')
     return
 
 
@@ -374,9 +366,6 @@ def setup_daughter_posi(c, parent, daughter, verbose, r_term, i_rx):
     if parent.chip_id - daughter.chip_id == 1: posi=3
     if verbose: print('parent ',parent,'\tDAUGHTER ',\
                       daughter,'==>\t enable POSI ', posi)
-    c[daughter].config.enable_posi=[0]*4
-    c[daughter].config.enable_posi[posi]=1
-    c.write_configuration(daughter, 'enable_posi')
     if verbose: print(c[daughter].config.enable_posi)
     registers_to_write=[]
     setattr(c[daughter].config,f'r_term{posi}', r_term)
@@ -384,6 +373,9 @@ def setup_daughter_posi(c, parent, daughter, verbose, r_term, i_rx):
     setattr(c[daughter].config,f'i_rx{posi}', i_rx)
     registers_to_write.append(c[daughter].config.register_map[f'i_rx{posi}'])
     for reg in registers_to_write: c.write_configuration(parent, reg)
+    c[daughter].config.enable_posi=[0]*4
+    c[daughter].config.enable_posi[posi]=1
+    c.write_configuration(daughter, 'enable_posi')
     return
     
     
@@ -397,10 +389,6 @@ def setup_daughter_piso(c, parent, daughter, verbose, tx_diff, tx_slice):
     if parent.chip_id - daughter.chip_id == 1: piso=2
     if verbose: print('parent ',parent,'\tDAUGHTER ',daughter,\
                       '==>\t PISO DS ', piso)
-    c[daughter].config.enable_piso_downstream=[0]*4
-    c[daughter].config.enable_piso_downstream[piso]=1
-    c.write_configuration(parent, 'enable_piso_downstream')
-    if verbose: print(c[daughter].config.enable_piso_downstream)
     
     registers_to_write=[]
     setattr(c[daughter].config,f'i_tx_diff{piso}', tx_diff)
@@ -409,13 +397,26 @@ def setup_daughter_piso(c, parent, daughter, verbose, tx_diff, tx_slice):
     registers_to_write.append(c[daughter].config.register_map[f'tx_slices{piso}'])
     for reg in registers_to_write: c.write_configuration(parent, reg)
 
-#    c[daughter].config.enable_piso_downstream=[0]*4
-#    c[daughter].config.enable_piso_downstream[piso]=1
-#    c.write_configuration(parent, 'enable_piso_downstream')
-#    if verbose: print(c[daughter].config.enable_piso_downstream)
+    c[daughter].config.enable_piso_downstream=[0]*4
+    c[daughter].config.enable_piso_downstream[piso]=1
+    c.write_configuration(parent, 'enable_piso_downstream')
+    if verbose: print(c[daughter].config.enable_piso_downstream)
     return piso
-    
-    
+
+
+
+def reset_daughter_uarts(c, daughter, verbose):
+    c[daughter].config.enable_piso_downstream=[0]*4
+    c.write_configuration(daughter, 'enable_piso_downstream')
+    if verbose: print('DAUGHTER ',daughter,' PISO DS ', \
+          c[daughter].config.enable_piso_downstream)
+    c[daughter].config.enable_posi=[1]*4
+    c.write_configuration(daughter, 'enable_posi')
+    if verbose: print('DAUGHTER ',daughter,' POSI ', \
+                      c[daughter].config.enable_posi)
+    return
+
+
 
 def append_upstream_chip_ids(io_channel, chip_id, waitlist):
     initial=len(waitlist)
@@ -510,10 +511,10 @@ def setup_initial_network(c, io, ioGroup, root_keys, verbose,
                                     r_term, i_rx)
                 piso = setup_daughter_piso(c, parent, daughter, verbose, \
                                            tx_diff, tx_slice)
-                setup_parent_posi(c, parent, daughter, verbose, \
-                                  r_term, i_rx)
                 disable_csa_trigger(c, daughter, \
                                     ref_current_trim=ref_current_trim)
+                setup_parent_posi(c, parent, daughter, verbose, \
+                                  r_term, i_rx)
 
                 ok, diff = reconcile_configuration(c, daughter, verbose)
                 if ok:
@@ -522,6 +523,7 @@ def setup_initial_network(c, io, ioGroup, root_keys, verbose,
                           '\t non-configured',cnt_nonconfigured)
                 if not ok:
                     print('\t\t==> Daughter',daughter,' failed to configure')
+                    reset_daughter_uarts(c, daughter, verbose)
                     disable_parent_piso_us(c, parent, daughter, verbose)
                     disable_parent_posi(c, parent, daughter, verbose)
 
@@ -616,11 +618,10 @@ def iterate_waitlist(c, io, ioGroup, activeUser, verbose,
                                     r_term, i_rx)
                 piso = setup_daughter_piso(c, parent, daughter, verbose, \
                                            tx_diff, tx_slice)
-                setup_parent_posi(c, parent, daughter, verbose, \
-                                  r_term, i_rx)
                 disable_csa_trigger(c, daughter, \
                                     ref_current_trim=ref_current_trim)
-
+                setup_parent_posi(c, parent, daughter, verbose, \
+                                  r_term, i_rx)
                 ok, diff = reconcile_configuration(c, daughter, verbose)
                 if ok:
                     waitlist.remove(chip_id)
@@ -628,6 +629,7 @@ def iterate_waitlist(c, io, ioGroup, activeUser, verbose,
                     break # break out of potential parents loop
                 if not ok:
                     print('\t\t==> Daughter',daughter,' failed to configure')
+                    reset_daughter_uarts(c, daughter, verbose)
                     disable_parent_piso_us(c, parent, daughter, verbose)
                     disable_parent_posi(c, parent, daughter, verbose)
                     outstanding.append((daughter, piso))
@@ -792,10 +794,12 @@ def main(logger=_default_logger, pacmanTile=_default_pacmanTile, \
          networkName=_default_networkName, verbose=_default_verbose, \
          activeUser=_default_activeUser, disablePower=_default_disablePower, \
          tx_diff=_default_tx_diff, tx_slice=_default_tx_slice, \
-         ref_current_trim=_default_ref_current_trim):
+         ref_current_trim=_default_ref_current_trim,
+         enable_ana_mon=_default_enable_ana_mon):
     
     c, io = enable_tile(pacmanTile, resetLength, ioGroup)
-    io.set_reg(0x25014,2,io_group=ioGroup)
+    if enable_ana_mon==True: io.set_reg(0x25014,2,io_group=ioGroup)
+    else: io.set_reg(0x25014,0x10,io_group=ioGroup)
     io.set_reg(0x25015,0x10,io_group=ioGroup)
 
     if logger==True:
@@ -864,5 +868,7 @@ if __name__=='__main__':
                         type=int, help='''Transmitter current slices [DAC]''')
     parser.add_argument('--ref_current_trim', default=_default_ref_current_trim, \
                         type=int, help='''Master reference current [DAC]''')
+    parser.add_argument('--enable_ana_mon', default=_default_enable_ana_mon, \
+                        type=bool, help='''To enable tile 2 ANA MON ''')
     args = parser.parse_args()
     c = main(**vars(args))
