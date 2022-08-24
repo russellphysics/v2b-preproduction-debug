@@ -5,8 +5,9 @@ import argparse
 import time
 import json
 import re
+import serial
 
-_default_logger=False
+_default_logger=True #False
 _default_pacmanTile=2
 _default_resetLength=64
 _default_ioGroup=3
@@ -16,8 +17,11 @@ _default_networkName=None
 _default_disablePower=False
 _default_tx_diff=0
 _default_tx_slice=15
-_default_ref_current_trim=16
+_default_ref_current_trim=0 #16
 _default_enable_ana_mon=False
+_default_read=False
+_default_broadcastRead=False
+_default_enableSerial=False
 
 def reconcile_configuration(c, chip_keys, verbose, \
                             timeout=0.1, connection_delay=0.01, \
@@ -126,7 +130,7 @@ def enable_tile(pacmanTile, resetLength, ioGroup):
     c.io.set_reg(0x00000014, 1, io_group=ioGroup)
     
     vdda_dac=44500;
-    vddd_dac=41000
+    vddd_dac=28500 #41000
     vdda_reg=0x00024130; vddd_reg=0x00024131
     if pacmanTile==2: vdda_reg=0x00024132; vddd_reg=0x00024133
     c.io.set_reg(vdda_reg, vdda_dac, io_group=ioGroup)
@@ -212,7 +216,8 @@ def disable_csa_trigger(c, chip_key, \
 
 
 def setup_root_chips(c, io, ioGroup, io_channel_root_chip_id_map, \
-                     verbose, tx_diff=0, tx_slice=15, \
+                     verbose, logger, read, \
+                     tx_diff=0, tx_slice=15, \
                      ref_current_trim=16, \
                      r_term=2, i_rx=8):
     root_keys=[]
@@ -254,6 +259,8 @@ def setup_root_chips(c, io, ioGroup, io_channel_root_chip_id_map, \
                   'chip packets {}'.format(total,chip))
         
         ok, diff = reconcile_configuration(c, chip_key, verbose)
+        if logger==True and read==True: c.run(2, ' logger DAQ running')
+        
         if ok:
             if chip_key not in c.chips: c.add_chip(chip_key, version='2b')
             root_keys.append(chip_key)
@@ -437,7 +444,8 @@ def append_upstream_chip_ids(io_channel, chip_id, waitlist):
 
 
     
-def setup_initial_network(c, io, ioGroup, root_keys, verbose,
+def setup_initial_network(c, io, ioGroup, root_keys, \
+                          verbose, logger, read, \
                           tx_diff=0, tx_slice=15, \
                           ref_current_trim=16, \
                           r_term=2, i_rx=8):
@@ -517,6 +525,8 @@ def setup_initial_network(c, io, ioGroup, root_keys, verbose,
                                   r_term, i_rx)
 
                 ok, diff = reconcile_configuration(c, daughter, verbose)
+                if logger==True and read==True: c.run(2, ' logger DAQ running')
+                
                 if ok:
                     cnt_configured+=1
                     print(daughter,'\tconfigured: ',cnt_configured,
@@ -570,7 +580,8 @@ def find_potential_parents(chip_id, network, verbose):
 
 
     
-def iterate_waitlist(c, io, ioGroup, activeUser, verbose,
+def iterate_waitlist(c, io, ioGroup, activeUser, \
+                     verbose, logger, read, \
                      tx_diff=0, tx_slice=15, \
                      ref_current_trim=16, \
                      r_term=2, i_rx=8):
@@ -623,6 +634,8 @@ def iterate_waitlist(c, io, ioGroup, activeUser, verbose,
                 setup_parent_posi(c, parent, daughter, verbose, \
                                   r_term, i_rx)
                 ok, diff = reconcile_configuration(c, daughter, verbose)
+                if logger==True and read==True: c.run(2, ' logger DAQ running')
+                
                 if ok:
                     waitlist.remove(chip_id)
                     print('WAITLIST RESOLVED\t',daughter)
@@ -752,40 +765,111 @@ def write_network_to_file(c, name, outstanding, \
 
 
 
-def measure_csa_ibias(c, ioGroup):
+def measure_csa_ibias(c, ioGroup, enableSerial):
     c.io = larpix.io.PACMAN_IO(relaxed=True)
     c.io.set_reg(0x25014, 2, io_group=ioGroup)
     c.io.set_reg(0x25015, 0x10, io_group=ioGroup)
+
+    d={}
+    ser = serial.Serial('/dev/ttyUSB0', 57600)
     
     for chip in c.chips:
         print(chip)
         for i in range(4):
-            text='Ready to proceed to quartile '+str(i)
-            proceed=input(text)
-            if proceed=='False' or proceed=='F' or proceed=='0': continue
+#            text='Ready to proceed to quartile '+str(i)
+#            proceed=input(text)
+#            if proceed=='False' or proceed=='F' or proceed=='0': continue
             registers_to_write=[]
             setattr(c[chip].config,f'current_monitor_bank{i}',[0,0,0,1])
             registers_to_write.append(c[chip].config.register_map[f'current_monitor_bank{i}'])
             for reg in registers_to_write: c.write_configuration(chip, reg)
+            if enableSerial:
+                ser.write(bytes(':READ?\r\n', 'utf-8'))
+                time.sleep(0.1)
+                response = ser.readline()
+                if str(chip.chip_id) not in d: d[str(chip.chip_id)]=[]
+                d[str(chip.chip_id)].append(response[14:28].decode("utf-8"))            
             
-            text='Proceed to disable?'
-            proceed=input(text)
-            if proceed=='False' or proceed=='F' or proceed=='0': continue
+#            text='Proceed to disable?'
+#            proceed=input(text)
+#            if proceed=='False' or proceed=='F' or proceed=='0': continue
             registers_to_write=[]
             setattr(c[chip].config,f'current_monitor_bank{i}',[0,0,0,0])
             registers_to_write.append(c[chip].config.register_map[f'current_monitor_bank{i}'])
             for reg in registers_to_write: c.write_configuration(chip, reg)
+            if enableSerial:
+                ser.write(bytes(':READ?\r\n', 'utf-8'))
+                time.sleep(0.1)
+                response = ser.readline()
+                if str(chip.chip_id) not in d: d[str(chip.chip_id)]=[]
+                d[str(chip.chip_id)].append(response[14:28].decode("utf-8"))
             
-            text='Proceed to next quartile or chip?'
-            proceed=input(text)
-            if proceed=='False' or proceed=='F' or proceed=='0': continue
+#            text='Proceed to next quartile or chip?'
+#            proceed=input(text)
+#            if proceed=='False' or proceed=='F' or proceed=='0': continue
 
-        text='Exit early? (Yes to exit)'
-        proceed=input(text)
-        if proceed=='Yes' or proceed=='Y': break
+ #       text='Exit early? (Yes to exit)'
+ #       proceed=input(text)
+ #       if proceed=='Yes' or proceed=='Y': break
         
     c.io.set_reg(0x25014, 0x10, io_group=ioGroup)
-    c.io.set_reg(0x25015, 0x10, io_group=ioGroup)    
+    c.io.set_reg(0x25015, 0x10, io_group=ioGroup)
+
+    if enableSerial==True:
+        print(d)
+        now = time.strftime("%Y_%m_%d_%H_%M_%S_%Z")
+        with open('currents_'+now+'.json','w') as outfile:
+            json.dump(d, outfile, indent=4)
+
+
+def measure_csa_ibias_chipid(c, ioGroup, enableSerial, chip, elapsedTime):
+    c.io = larpix.io.PACMAN_IO(relaxed=True)
+    c.io.set_reg(0x25014, 2, io_group=ioGroup)
+    c.io.set_reg(0x25015, 0x10, io_group=ioGroup)
+
+    d={}
+    ser = serial.Serial('/dev/ttyUSB0', 57600)
+    
+    start = time.time()
+    elapsed_time = time.time() - start
+    while elapsed_time<elapsedTime:
+        time.sleep(5)
+        print(elapsed_time)
+        now = time.strftime("%Y_%m_%d_%H_%M_%S_%Z")
+        for i in range(4):
+
+            registers_to_write=[]
+            setattr(c[chip].config,f'current_monitor_bank{i}',[0,0,0,1])
+            registers_to_write.append(c[chip].config.register_map[f'current_monitor_bank{i}'])
+            for reg in registers_to_write: c.write_configuration(chip, reg)
+            if enableSerial:
+                ser.write(bytes(':READ?\r\n', 'utf-8'))
+                time.sleep(0.1)
+                response = ser.readline()
+                if now not in d: d[now]=[]
+                d[now].append(response[14:28].decode("utf-8"))            
+            
+            registers_to_write=[]
+            setattr(c[chip].config,f'current_monitor_bank{i}',[0,0,0,0])
+            registers_to_write.append(c[chip].config.register_map[f'current_monitor_bank{i}'])
+            for reg in registers_to_write: c.write_configuration(chip, reg)
+            if enableSerial:
+                ser.write(bytes(':READ?\r\n', 'utf-8'))
+                time.sleep(0.1)
+                response = ser.readline()
+                if now not in d: d[now]=[]
+                d[now].append(response[14:28].decode("utf-8"))
+
+        elapsed_time = time.time() - start
+            
+    c.io.set_reg(0x25014, 0x10, io_group=ioGroup)
+    c.io.set_reg(0x25015, 0x10, io_group=ioGroup)
+
+    if enableSerial==True:
+        print(d)
+        now = time.strftime("%Y_%m_%d_%H_%M_%S_%Z")
+        with open('currents_'+now+'.json','w') as outfile:
+            json.dump(d, outfile, indent=4)
 
     
     
@@ -794,9 +878,11 @@ def main(logger=_default_logger, pacmanTile=_default_pacmanTile, \
          networkName=_default_networkName, verbose=_default_verbose, \
          activeUser=_default_activeUser, disablePower=_default_disablePower, \
          tx_diff=_default_tx_diff, tx_slice=_default_tx_slice, \
-         ref_current_trim=_default_ref_current_trim,
-         enable_ana_mon=_default_enable_ana_mon):
-    
+         ref_current_trim=_default_ref_current_trim, \
+         enable_ana_mon=_default_enable_ana_mon, \
+         read=_default_read, broadcastRead=_default_broadcastRead, \
+         enableSerial=_default_enableSerial):
+
     c, io = enable_tile(pacmanTile, resetLength, ioGroup)
     if enable_ana_mon==True: io.set_reg(0x25014,2,io_group=ioGroup)
     else: io.set_reg(0x25014,0x10,io_group=ioGroup)
@@ -817,17 +903,27 @@ def main(logger=_default_logger, pacmanTile=_default_pacmanTile, \
     network_ext_node(c, ioGroup, io_channels, io_channel_root_chip_id_map)
 
     root_keys = setup_root_chips(c, io, ioGroup, io_channel_root_chip_id_map, \
-                                 verbose)
+                                 verbose, logger, read, \
+                                 tx_diff=tx_diff, tx_slice=tx_slice, \
+                                 ref_current_trim=ref_current_trim)
+    
     print('ROOT KEYS:\t',root_keys)
 
-    setup_initial_network(c, io, ioGroup, root_keys, verbose, \
+    setup_initial_network(c, io, ioGroup, root_keys, \
+                          verbose, logger, read, \
                           tx_diff=tx_diff, tx_slice=tx_slice, \
                           ref_current_trim=ref_current_trim)
     
-    nonconfigured = iterate_waitlist(c, io, ioGroup, activeUser, verbose, \
+    nonconfigured = iterate_waitlist(c, io, ioGroup, activeUser, \
+                                     verbose, logger, read,\
                                      tx_diff=tx_diff, tx_slice=tx_slice, \
                                      ref_current_trim=ref_current_trim)
     print('\n\n',nonconfigured)
+
+    if logger==True and broadcastRead==True:
+        for chip_key in c.chips:
+            c.read_configuration(chip_key,0)
+
     
     if logger==True: c.logger.flush(); c.logger.disable()
  
@@ -870,5 +966,12 @@ if __name__=='__main__':
                         type=int, help='''Master reference current [DAC]''')
     parser.add_argument('--enable_ana_mon', default=_default_enable_ana_mon, \
                         type=bool, help='''To enable tile 2 ANA MON ''')
+    parser.add_argument('--read', default=_default_read, type=bool, \
+                        help='''Read for 2 seconds whenever chip added to network''')
+    parser.add_argument('--broadcastRead', default=_default_broadcastRead, type=bool, \
+                        help='''Broadcast read to all chips on IO channel ''')
+    parser.add_argument('--enableSerial', default=_default_enableSerial, \
+                        type=bool, help='''Enable serial port''')
+                        
     args = parser.parse_args()
     c = main(**vars(args))
