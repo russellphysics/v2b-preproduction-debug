@@ -920,10 +920,14 @@ def main(logger=_default_logger, pacmanTile=_default_pacmanTile, \
                                      ref_current_trim=ref_current_trim)
     print('\n\n',nonconfigured)
 
+    if logger==True and enableSerial==True:
+        measure_csa_ibias(c, ioGroup, enableSerial)
+    
     if logger==True and broadcastRead==True:
+        io.set_reg(0x18,0b11110000,io_group=ioGroup)
         for chip_key in c.chips:
             c.read_configuration(chip_key,0)
-
+        io.set_reg(0x18,0b0,io_group=ioGroup)
     
     if logger==True: c.logger.flush(); c.logger.disable()
  
