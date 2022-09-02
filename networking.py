@@ -146,6 +146,101 @@ def enable_tile(pacmanTile, resetLength, ioGroup):
     return c, c.io
 
 
+def enable_tile_ramping(pacmanTile, resetLength, ioGroup, \
+                        powerOnReset, ramp='vdda'):
+    c = larpix.Controller()
+    c.io = larpix.io.PACMAN_IO(relaxed=True)
+
+    # invert POSI/PISO polarity (specific to LArPix-v2b preproduction tile)
+    inversion_registers=[0x0301c, 0x0401c, 0x0501c, 0x0601c]
+    if pacmanTile==2: inversion_registers=[0x0701c, 0x0801c, 0x0901c, 0x0a01c]
+    for ir in inversion_registers:
+        c.io.set_reg(ir, 0b11, io_group=ioGroup)
+
+    # disable PACMAN UART POSI
+    c.io.set_reg(0x18, 0b0, io_group=ioGroup)
+
+    # uncomment for reset during power on
+    if powerOnReset==True:
+        c.io.reset_larpix(length=resetLength, io_group=ioGroup) # resetLength 2x10^7
+    
+    # set MCLK to 10 MHz (and clock phase shift)
+    c.io.set_reg(0x101c, 4, io_group=ioGroup)
+
+    # enable global LArPix power
+    c.io.set_reg(0x00000014, 1, io_group=ioGroup)
+    
+    vdda_dac=44500;
+    vddd_dac=28500 #41000
+    vdda_reg=0x00024130; vddd_reg=0x00024131
+    if pacmanTile==2: vdda_reg=0x00024132; vddd_reg=0x00024133
+    c.io.set_reg(vdda_reg, 0, io_group=ioGroup)
+    c.io.set_reg(vddd_reg, 0, io_group=ioGroup)
+
+    # enable power to tile
+    if pacmanTile==1: c.io.set_reg(0x00000010, 0b1000000001, io_group=ioGroup)
+    if pacmanTile==2: c.io.set_reg(0x00000010, 0b1000000010, io_group=ioGroup)
+
+    if ramp=='vdda':
+        step=100 # DAC
+        ctr=0; vdda=0
+        while vdda<vdda_dac:
+            if ctr==0: start=time.time()
+            ctr+=1
+            vdda+=step
+            c.io.set_reg(vdda_reg, vdda, io_group=ioGroup)
+            time.sleep(0.01)
+            if vdda>=vdda_dac: print(time.time()-start,' seconds to ramp VDDA')
+        time.sleep(30)
+        ctr=0; vddd=0
+        while vddd<vddd_dac:
+            if ctr==0: start=time.time()
+            ctr+=1
+            vddd+=step
+            c.io.set_reg(vddd_reg, vddd, io_group=ioGroup)
+            time.sleep(0.02)
+            if vddd>=vddd_dac: print(time.time()-start,' seconds to ramp VDDD')
+
+    if ramp=='vddd':
+        step=100 # DAC
+        ctr=0; vddd=0
+        while vddd<vddd_dac:
+            if ctr==0: start=time.time()
+            ctr+=1
+            vddd+=step
+            c.io.set_reg(vddd_reg, vddd, io_group=ioGroup)
+            time.sleep(0.02)
+            if vddd>=vddd_dac: print(time.time()-start,' seconds to ramp VDDD')
+        time.sleep(30)
+        ctr=0; vdda=0
+        while vdda<vdda_dac:
+            if ctr==0: start=time.time()
+            ctr+=1
+            vdda+=step
+            c.io.set_reg(vdda_reg, vdda, io_group=ioGroup)
+            time.sleep(0.01)
+            if vdda>=vdda_dac: print(time.time()-start,' seconds to ramp VDDA')
+
+    if ramp=='both':
+        step_vdda=100; step_vddd=50
+        ctr=0; vddd=0; vdda=0
+        while vddd<vddd_dac and vdda<vdda_dac:
+            if ctr==0: start=time.time()
+            ctr+=1
+            vddd+=step_vddd; vdda+=step_vdda
+            if vddd<=vddd_dac: c.io.set_reg(vddd_reg, vddd, io_group=ioGroup)
+            else: print(time.time()-start,' seconds to ramp VDDD')
+            if vdda<=vdda_dac: c.io.set_reg(vdda_reg, vdda, io_group=ioGroup)
+            else: print(time.time()-start,' seconds to ramp VDDA')
+            time.sleep(0.01)
+            
+
+    time.sleep(1)
+    if powerOnReset==False: c.io.reset_larpix(length=resetLength, io_group=ioGroup)
+    report_power(c.io, ioGroup)
+    return c, c.io
+
+
 
 def disable_tile(io, pacmanTile, ioGroup):
     # VDDD set to 0 explicitly needed on rev4
