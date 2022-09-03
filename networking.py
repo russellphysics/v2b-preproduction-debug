@@ -111,6 +111,7 @@ def enable_tile(pacmanTile, resetLength, ioGroup):
     # invert POSI/PISO polarity (specific to LArPix-v2b preproduction tile)
     inversion_registers=[0x0301c, 0x0401c, 0x0501c, 0x0601c]
     if pacmanTile==2: inversion_registers=[0x0701c, 0x0801c, 0x0901c, 0x0a01c]
+    if pacmanTile==0: inversion_registers+=[0x0701c, 0x0801c, 0x0901c, 0x0a01c]
     for ir in inversion_registers:
         c.io.set_reg(ir, 0b11, io_group=ioGroup)
 
@@ -135,10 +136,15 @@ def enable_tile(pacmanTile, resetLength, ioGroup):
     if pacmanTile==2: vdda_reg=0x00024132; vddd_reg=0x00024133
     c.io.set_reg(vdda_reg, vdda_dac, io_group=ioGroup)
     c.io.set_reg(vddd_reg, vddd_dac, io_group=ioGroup)
-
+    if pacmanTile==0:
+        vdda_reg=0x00024132; vddd_reg=0x00024133
+        c.io.set_reg(vdda_reg, vdda_dac, io_group=ioGroup)
+        c.io.set_reg(vddd_reg, vddd_dac, io_group=ioGroup)
+    
     # enable power to tile
     if pacmanTile==1: c.io.set_reg(0x00000010, 0b1000000001, io_group=ioGroup)
     if pacmanTile==2: c.io.set_reg(0x00000010, 0b1000000010, io_group=ioGroup)
+    if pacmanTile==0: c.io.set_reg(0x00000010, 0b1000000011, io_group=ioGroup)
 
     time.sleep(1)
     c.io.reset_larpix(length=resetLength, io_group=ioGroup)
@@ -544,6 +550,7 @@ def setup_initial_network(c, io, ioGroup, root_keys, \
                           tx_diff=0, tx_slice=15, \
                           ref_current_trim=16, \
                           r_term=2, i_rx=8):
+    root_ioc=[rk.io_channel for rk in root_keys]
     waitlist=set()
     cnt_configured, cnt_nonconfigured=0,0
     firstIteration=True
@@ -571,19 +578,20 @@ def setup_initial_network(c, io, ioGroup, root_keys, \
         
         bail=False
         last_chip_id = root.chip_id
+        print(last_chip_id,' last chip id before while')
         while last_chip_id<=root.chip_id+9:
             if bail==True: break
             for parent_piso_us in [3,1,2]:
-                print('\n')
+                if verbose: print('\n')
                 if bail==True: break
                 daughter_id = find_daughter_id(parent_piso_us, last_chip_id, \
                                                root.io_channel)
-#                if daughter_id==39: continue
 
-                ck_ids=[]
-                for ck in c.chips: ck_ids.append(ck.chip_id)
-                if daughter_id in ck_ids: continue
-
+                cks=[]
+                for ck in c.chips:
+                    if ck.io_channel in root_ioc: cks.append(ck.chip_id)
+                if daughter_id in cks: continue
+                
                 parent=larpix.key.Key(root.io_group, root.io_channel, \
                                       last_chip_id)
 
@@ -647,7 +655,6 @@ def setup_initial_network(c, io, ioGroup, root_keys, \
                 io.set_reg(0x18, 0, io_group=ioGroup)
                 
             last_chip_id = daughter_id
-            #print('last chip id: \t', last_chip_id,'\t bail status: ',bail)
             
         firstIteration=False
     print(len(c.chips),' CONFIGURED chips in network')
@@ -816,7 +823,8 @@ def write_network_to_file(c, name, outstanding, \
                           ioGroup, pacmanTile, layout="2.5.0"):
     io_channels=list(range(1,5,1))
     if pacmanTile==2: io_channels=list(range(5,9,1))
-
+    if pacmanTile==0: io_channels=list(range(1,9,1))
+    
     d=dict()
     d["_config_type"]="controller"
     d["name"]=name
@@ -990,12 +998,24 @@ def main(logger=_default_logger, pacmanTile=_default_pacmanTile, \
 
     io_channels=list(range(1,5,1))
     if pacmanTile==2: io_channels=list(range(5,9,1))
+    if pacmanTile==0: io_channels=list(range(1,9,1))
     io_channel_root_chip_id_map={}
     temp=[21,41,71,91]
-    for i in range(len(io_channels)):
-        io_channel_root_chip_id_map[io_channels[i]]=temp[i]
+    if pacmanTile!=0:
+        for i in range(len(io_channels)):
+            io_channel_root_chip_id_map[io_channels[i]]=temp[i]
+    if pacmanTile==0:
+        ctr=0
+        for i in io_channels[:4]:
+            io_channel_root_chip_id_map[i]=temp[ctr]
+            ctr+=1
+        ctr=0
+        for i in io_channels[4:]:
+            io_channel_root_chip_id_map[i]=temp[ctr]
+            ctr+=1
 
     network_ext_node(c, ioGroup, io_channels, io_channel_root_chip_id_map)
+
 
     root_keys = setup_root_chips(c, io, ioGroup, io_channel_root_chip_id_map, \
                                  verbose, logger, read, \
@@ -1003,12 +1023,22 @@ def main(logger=_default_logger, pacmanTile=_default_pacmanTile, \
                                  ref_current_trim=ref_current_trim)
     
     print('ROOT KEYS:\t',root_keys)
-
-    setup_initial_network(c, io, ioGroup, root_keys, \
-                          verbose, logger, read, \
-                          tx_diff=tx_diff, tx_slice=tx_slice, \
-                          ref_current_trim=ref_current_trim)
     
+    if pacmanTile==1 or pacmanTile==2:
+        setup_initial_network(c, io, ioGroup, root_keys, \
+                              verbose, logger, read, \
+                              tx_diff=tx_diff, tx_slice=tx_slice, \
+                              ref_current_trim=ref_current_trim)
+    if pacmanTile==0:
+        setup_initial_network(c, io, ioGroup, root_keys[:4], \
+                              verbose, logger, read, \
+                              tx_diff=tx_diff, tx_slice=tx_slice, \
+                              ref_current_trim=ref_current_trim)
+        setup_initial_network(c, io, ioGroup, root_keys[4:], \
+                              verbose, logger, read, \
+                              tx_diff=tx_diff, tx_slice=tx_slice, \
+                              ref_current_trim=ref_current_trim)
+        
     nonconfigured = iterate_waitlist(c, io, ioGroup, activeUser, \
                                      verbose, logger, read,\
                                      tx_diff=tx_diff, tx_slice=tx_slice, \
